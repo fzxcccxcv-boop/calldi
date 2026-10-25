@@ -29,10 +29,10 @@ from pytgcalls.exceptions import NoActiveGroupCall
 # ==========================================
 # ⚙️ CONFIGURATION (SUPPORTS ENV VARS FOR RAILWAY/RENDER)
 # ==========================================
-API_ID = int(os.environ.get("API_ID", 12345678))             # Replace or set in Env
-API_HASH = os.environ.get("API_HASH", "your_api_hash_here")  # Replace or set in Env
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_bot_token")    # Replace or set in Env
-OWNER_ID = int(os.environ.get("OWNER_ID", 1234567890))       # Replace or set in Env
+API_ID = int(os.environ.get("API_ID", 35222361))             # Replace or set in Env
+API_HASH = os.environ.get("API_HASH", "37e25f9cff15259a786c55da0b0af3f3")  # Replace or set in Env
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8570478868:AAEgOjPS2gCikZu9spLM8PKMJHMHtMNVJzM")    # Replace or set in Env
+OWNER_ID = int(os.environ.get("OWNER_ID", 8797691602))       # Replace or set in Env
 PORT = int(os.environ.get("PORT", 8080))                     # For Render/Railway health check
 
 # Directories & Database File

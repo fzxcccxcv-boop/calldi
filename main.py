@@ -22,8 +22,8 @@ from pyrogram.errors import (
 )
 from pyrogram.raw.functions.phone import CreateGroupCall
 
-from pytgcalls import PyTgCalls, filters as fl
-from pytgcalls.types import MediaStream, AudioQuality, StreamAudioEnded
+from pytgcalls import PyTgCalls
+from pytgcalls.types import MediaStream, AudioQuality, StreamEnded
 from pytgcalls.exceptions import NoActiveGroupCall
 
 # ==========================================
@@ -32,7 +32,7 @@ from pytgcalls.exceptions import NoActiveGroupCall
 API_ID = int(os.environ.get("API_ID", 35222361))             
 API_HASH = os.environ.get("API_HASH", "37e25f9cff15259a786c55da0b0af3f3")  
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8570478868:AAEgOjPS2gCikZu9spLM8PKMJHMHtMNVJzM")    
-OWNER_ID = int(os.environ.get("OWNER_ID", 8797691602))       
+OWNER_ID = int(os.environ.get("OWNER_ID", 8684812026))       
 PORT = int(os.environ.get("PORT", 8080))                     
 
 os.makedirs("audios", exist_ok=True)
@@ -506,7 +506,6 @@ async def finalize_userbot_host(user_id: int, temp_client: Client, message: Mess
 
     status_msg = await message.reply_text(f"🚀 **Booting Lexii Userbot on `{me.first_name}` (`{me.id}`)...**")
     
-    # 🛠️ FIX: Wrapped in try-except so if it fails, it alerts you instead of getting stuck.
     try:
         await start_single_userbot(string_session)
         await status_msg.edit_text(
@@ -516,7 +515,6 @@ async def finalize_userbot_host(user_id: int, temp_client: Client, message: Mess
             reply_markup=get_main_menu()
         )
     except Exception as e:
-        # Remove invalid session if boot fails
         if string_session in db["sessions"]:
             db["sessions"].remove(string_session)
             save_db(db)
@@ -646,23 +644,25 @@ async def start_single_userbot(session_str: str):
     )
     call_py = PyTgCalls(ub)
 
-    @call_py.on_update(fl.stream_end())
-    async def on_stream_end(client: PyTgCalls, update: StreamAudioEnded):
-        chat_id = update.chat_id
-        loop_info = ACTIVE_LOOPS.get(chat_id)
-        if loop_info and loop_info.get("loop"):
-            try:
-                await client.play(
-                    chat_id,
-                    MediaStream(
-                        loop_info["file"],
-                        audio_parameters=AudioQuality.HIGH,
-                        ffmpeg_parameters=loop_info["ffmpeg"]
+    # 🛠️ FIX: Bypassed the buggy fl.stream_end() filter by using a universal on_update
+    @call_py.on_update()
+    async def on_stream_end(client: PyTgCalls, update: Update):
+        if isinstance(update, StreamEnded):
+            chat_id = update.chat_id
+            loop_info = ACTIVE_LOOPS.get(chat_id)
+            if loop_info and loop_info.get("loop"):
+                try:
+                    await client.play(
+                        chat_id,
+                        MediaStream(
+                            loop_info["file"],
+                            audio_parameters=AudioQuality.HIGH,
+                            ffmpeg_parameters=loop_info["ffmpeg"]
+                        )
                     )
-                )
-                await client.change_volume_call(chat_id, 200)
-            except Exception:
-                pass
+                    await client.change_volume_call(chat_id, 200)
+                except Exception:
+                    pass
 
     @ub.on_message(filters.text & ~filters.private)
     async def lexii_group_commands(client: Client, message: Message):
@@ -798,7 +798,7 @@ async def start_single_userbot(session_str: str):
             except Exception:
                 pass
 
-    # 🛠️ FIX: Added await ub.start() which was missing!
+    # 🛠️ FIX: Added await ub.start() to prevent the bot from hanging on boot
     await ub.start()
     await call_py.start()
     me = await ub.get_me()

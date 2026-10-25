@@ -16,4 +16,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["python3", "lexii_bot.py"]
+CMD ["python3", "main.py"]

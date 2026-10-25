@@ -29,19 +29,17 @@ from pytgcalls.exceptions import NoActiveGroupCall
 # ==========================================
 # ⚙️ CONFIGURATION (SUPPORTS ENV VARS FOR RAILWAY/RENDER)
 # ==========================================
-API_ID = int(os.environ.get("API_ID", 35222361))             # Replace or set in Env
-API_HASH = os.environ.get("API_HASH", "37e25f9cff15259a786c55da0b0af3f3")  # Replace or set in Env
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8570478868:AAEgOjPS2gCikZu9spLM8PKMJHMHtMNVJzM")    # Replace or set in Env
-OWNER_ID = int(os.environ.get("OWNER_ID", 8797691602))       # Replace or set in Env
-PORT = int(os.environ.get("PORT", 8080))                     # For Render/Railway health check
+API_ID = int(os.environ.get("API_ID", 35222361))             
+API_HASH = os.environ.get("API_HASH", "37e25f9cff15259a786c55da0b0af3f3")  
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8570478868:AAEgOjPS2gCikZu9spLM8PKMJHMHtMNVJzM")    
+OWNER_ID = int(os.environ.get("OWNER_ID", 8797691602))       
+PORT = int(os.environ.get("PORT", 8080))                     
 
-# Directories & Database File
 os.makedirs("audios", exist_ok=True)
 os.makedirs("sessions", exist_ok=True)
 DB_FILE = "lexii_db.json"
 SILENT_WAV = "audios/silent.wav"
 
-# Generate a 2-second silent WAV file for initial call standby ("cll" command)
 if not os.path.exists(SILENT_WAV):
     with wave.open(SILENT_WAV, "w") as f:
         f.setnchannels(1)
@@ -53,19 +51,10 @@ if not os.path.exists(SILENT_WAV):
 # 🎚️ CUSTOM FFMPEG BASS-BOOST & EARRAPE PRESETS
 # ==========================================
 MODE_FILTERS = {
-    # Extreme Earrape: +18dB Sub-Bass + +8dB Treble + 7x Volume Overdrive + Echo
     "-xtrem": "-af bass=g=18:f=110:w=0.6,treble=g=8:f=3500,volume=7.0,aecho=0.8:0.9:100:0.5",
-    
-    # Deep Flow: +12dB Smooth Punchy Bass + 4x Volume + Wide Echo
     "-flow": "-af bass=g=12:f=100:w=0.5,volume=4.0,aecho=0.8:0.88:60:0.4",
-    
-    # Advanced Reverb & Loudness: +14dB Bass + +10dB Highs + 5.5x Gain + Long Echo
     "-adv": "-af bass=g=14:f=120:w=0.6,treble=g=10:f=3000,volume=5.5,aecho=0.8:0.9:120:0.6",
-    
-    # Dynamic Punch: Heavy Dynamic Compressor + +16dB Bass + 6x Volume + Fast Echo
     "-dynamic": "-af acompressor=threshold=0.05:ratio=9:attack=5:release=50,bass=g=16:f=110:w=0.6,volume=6.0,aecho=0.8:0.88:40:0.4",
-    
-    # VL Ultra Max Overdrive: +22dB Extreme Bass + 10x Earrape Gain + Echo
     "vl_max": "-af bass=g=22:f=110:w=0.7,treble=g=10:f=3500,volume=10.0,aecho=0.8:0.9:100:0.5"
 }
 
@@ -98,10 +87,10 @@ def save_db(data):
 db = load_db()
 
 # Runtime States
-USER_STATES = {}          # Tracks inline menu steps (OTP, 2FA, Upload, Add Admin, Join Group)
-ACTIVE_USERBOTS = []      # List of dicts: {"client": ub, "call": call_py, "id": int, "name": str}
-ACTIVE_LOOPS = {}         # {chat_id: {"file": path, "ffmpeg": params, "loop": True}}
-PROCESSED_MSGS = set()    # Prevents duplicate responses when multiple userbots are in the same group
+USER_STATES = {}          
+ACTIVE_USERBOTS = []      
+ACTIVE_LOOPS = {}         
+PROCESSED_MSGS = set()    
 
 def is_authorized(user_id: int) -> bool:
     if db.get("public_admin_mode", False):
@@ -112,31 +101,19 @@ def is_authorized(user_id: int) -> bool:
 # 🔗 GROUP LINK NORMALIZER & SWARM JOINER
 # ==========================================
 def normalize_chat_target(raw_link: str) -> str:
-    """
-    Cleans invite links or usernames so Pyrogram's join_chat() accepts them reliably.
-    Supports:
-      - https://t.me/+inviteHash
-      - https://t.me/joinchat/inviteHash
-      - https://t.me/public_username
-      - @public_username
-    """
     target = raw_link.strip()
-    # Keep private invite links intact (normalize t.me/ to https://t.me/)
     if "joinchat/" in target or "t.me/+" in target:
         if not target.startswith("http"):
             target = "https://" + target.lstrip("/")
         return target
 
-    # Extract username from standard public t.me links
     match = re.match(r"^(?:https?://)?t\.me/([a-zA-Z0-9_]+)/?$", target)
     if match:
         return match.group(1)
 
     return target.lstrip("@")
 
-
 async def _single_ub_join_group(ub_entry: dict, target: str) -> tuple[bool, str]:
-    """Makes one userbot join the target group link/username."""
     client: Client = ub_entry["client"]
     try:
         await client.join_chat(target)
@@ -153,12 +130,7 @@ async def _single_ub_join_group(ub_entry: dict, target: str) -> tuple[bool, str]
     except Exception as e:
         return False, f"❌ `{ub_entry['name']}`: `{type(e).__name__}`"
 
-
 async def swarm_join_group(raw_link: str) -> tuple[int, list[str]]:
-    """
-    Simultaneously joins ALL hosted userbots into the target group.
-    Returns (success_count, details_list).
-    """
     if not ACTIVE_USERBOTS:
         return 0, ["⚠️ No hosted userbots active!"]
 
@@ -223,7 +195,6 @@ async def start_cmd(client: Client, message: Message):
         reply_markup=get_main_menu()
     )
 
-# Direct `join <group_link>` command in Controller Bot PM
 @bot.on_message(filters.private & filters.regex(r"(?i)^join\s+(.+)"))
 async def bot_pm_join_cmd(client: Client, message: Message):
     if not is_authorized(message.from_user.id):
@@ -392,7 +363,6 @@ async def handle_private_inputs(client: Client, message: Message):
     state = USER_STATES[user_id]
     action = state.get("action")
 
-    # 0. HANDLE SWARM AUTO-JOIN LINK INPUT
     if action == "awaiting_join_link":
         if not message.text:
             return await message.reply_text("❌ Please send a valid group invite link or @username.")
@@ -408,7 +378,6 @@ async def handle_private_inputs(client: Client, message: Message):
             reply_markup=get_main_menu()
         )
 
-    # 1. HANDLE AUDIO / VN UPLOAD
     elif action == "upload_audio":
         media = message.audio or message.voice or message.document
         if not media:
@@ -437,7 +406,6 @@ async def handle_private_inputs(client: Client, message: Message):
             reply_markup=get_main_menu()
         )
 
-    # 2. HANDLE ADD / REMOVE ADMIN
     elif action == "add_admin":
         try:
             target_id = int(message.text.strip())
@@ -460,7 +428,6 @@ async def handle_private_inputs(client: Client, message: Message):
         except ValueError:
             await message.reply_text("❌ Invalid User ID.")
 
-    # 3. REAL-TIME HOSTING: STEP 1 (PHONE NUMBER)
     elif action == "awaiting_phone":
         phone = message.text.strip()
         status_msg = await message.reply_text("🔄 **Connecting to Telegram & requesting real-time OTP...**")
@@ -490,7 +457,6 @@ async def handle_private_inputs(client: Client, message: Message):
             USER_STATES.pop(user_id, None)
             await status_msg.edit_text(f"❌ **Error sending OTP:** `{e}`", reply_markup=get_main_menu())
 
-    # 4. REAL-TIME HOSTING: STEP 2 (OTP VERIFICATION)
     elif action == "awaiting_otp":
         otp = message.text.replace(" ", "").strip()
         temp_client: Client = state["client"]
@@ -514,7 +480,6 @@ async def handle_private_inputs(client: Client, message: Message):
             USER_STATES.pop(user_id, None)
             await message.reply_text(f"❌ **Login Failed:** `{e}`", reply_markup=get_main_menu())
 
-    # 5. REAL-TIME HOSTING: STEP 3 (2FA PASSWORD)
     elif action == "awaiting_2fa":
         password = message.text.strip()
         temp_client: Client = state["client"]
@@ -539,14 +504,28 @@ async def finalize_userbot_host(user_id: int, temp_client: Client, message: Mess
         db["sessions"].append(string_session)
         save_db(db)
 
-    await message.reply_text(f"🚀 **Booting Lexii Userbot on `{me.first_name}` (`{me.id}`)...**")
-    await start_single_userbot(string_session)
-    await message.reply_text(
-        f"✅ **Lexii Userbot is now LIVE on `{me.first_name}`!**\n"
-        f"🤖 **Total Swarm Size:** `{len(ACTIVE_USERBOTS)}` Userbot(s)\n\n"
-        f"Use `join <group_link>` or click **🔗 Swarm Join Group** to deploy all bots into a chat!",
-        reply_markup=get_main_menu()
-    )
+    status_msg = await message.reply_text(f"🚀 **Booting Lexii Userbot on `{me.first_name}` (`{me.id}`)...**")
+    
+    # 🛠️ FIX: Wrapped in try-except so if it fails, it alerts you instead of getting stuck.
+    try:
+        await start_single_userbot(string_session)
+        await status_msg.edit_text(
+            f"✅ **Lexii Userbot is now LIVE on `{me.first_name}`!**\n"
+            f"🤖 **Total Swarm Size:** `{len(ACTIVE_USERBOTS)}` Userbot(s)\n\n"
+            f"Use `join <group_link>` or click **🔗 Swarm Join Group** to deploy all bots into a chat!",
+            reply_markup=get_main_menu()
+        )
+    except Exception as e:
+        # Remove invalid session if boot fails
+        if string_session in db["sessions"]:
+            db["sessions"].remove(string_session)
+            save_db(db)
+        await status_msg.edit_text(
+            f"❌ **Failed to boot userbot:** `{e}`\n\n"
+            "This usually happens if the session is invalid, revoked, or your account is restricted.\n"
+            "Please try hosting again.",
+            reply_markup=get_main_menu()
+        )
 
 
 # ==========================================
@@ -667,7 +646,6 @@ async def start_single_userbot(session_str: str):
     )
     call_py = PyTgCalls(ub)
 
-    # --- AUTO-LOOP HANDLER FOR THIS SPECIFIC USERBOT ---
     @call_py.on_update(fl.stream_end())
     async def on_stream_end(client: PyTgCalls, update: StreamAudioEnded):
         chat_id = update.chat_id
@@ -686,13 +664,11 @@ async def start_single_userbot(session_str: str):
             except Exception:
                 pass
 
-    # --- GROUP COMMAND HANDLER (DEDUPLICATED FOR SWARM) ---
     @ub.on_message(filters.text & ~filters.private)
     async def lexii_group_commands(client: Client, message: Message):
         if not message.from_user or not is_authorized(message.from_user.id):
             return
 
-        # Deduplicate so only the first userbot in the group processes the text trigger
         msg_key = (message.chat.id, message.id)
         if msg_key in PROCESSED_MSGS:
             return
@@ -704,11 +680,9 @@ async def start_single_userbot(session_str: str):
         text = raw_text.lower()
         chat_id = message.chat.id
 
-        # 1. WAKE UP TRIGGER: "hey lexii"
         if text == "hey lexii":
             await message.reply_text("yess dear how can i help you??")
 
-        # 2. MENU TRIGGER: "menu"
         elif text == "menu":
             menu_text = (
                 "🎛 **LEXII SWARM USERBOT MENU**\n"
@@ -725,7 +699,6 @@ async def start_single_userbot(session_str: str):
             )
             await message.reply_text(menu_text)
 
-        # 3. SWARM GROUP AUTO-JOIN COMMAND: "join <group_link>"
         elif text.startswith("join "):
             target_link = raw_text.split(maxsplit=1)[1].strip()
             status_msg = await message.reply_text(
@@ -739,7 +712,6 @@ async def start_single_userbot(session_str: str):
                 f"✅ Type `cll` in the target group to launch the voice call!"
             )
 
-        # 4. MULTI-USERBOT CALL JOIN / CREATE COMMAND: "cll"
         elif text == "cll":
             joined_count = await swarm_join_or_create_call(chat_id)
             if joined_count > 0:
@@ -749,7 +721,6 @@ async def start_single_userbot(session_str: str):
                     "❌ **Cannot start or join call!** Make sure a call is running or at least one Userbot has 'Manage Video Chats' admin permission."
                 )
 
-        # 5. MODE TRIGGERS: -xtrem / -xtream / -flow / -adv / -dynamic
         elif text in ["-xtrem", "-xtream", "-flow", "-adv", "-dynamic"]:
             mode_key = "-xtrem" if text == "-xtream" else text
             audio_file = db["audios"].get(mode_key) or db["audios"].get("default")
@@ -778,7 +749,6 @@ async def start_single_userbot(session_str: str):
             else:
                 await message.reply_text("❌ **Failed to play audio in call! Type `cll` first.**")
 
-        # 6. PLAYBACK CONTROLS: pe (Pause), rs (Resume), st (Stop), vl (10x Earrape Volume)
         elif text == "pe":
             await swarm_control_action(chat_id, "pe")
             await message.reply_text("⏸ **All Userbots Paused.** (Say `rs` to resume)")
@@ -800,7 +770,6 @@ async def start_single_userbot(session_str: str):
             await swarm_control_action(chat_id, "vl")
             await message.reply_text("🔊 **MAXIMUM OVERDRIVE ACTIVATED (+22dB Bass + 10x Earrape Gain + 200% Call Vol)!**")
 
-        # 7. OWNER COMMAND: GIVE ADMIN TO EVERYONE
         elif text == "admin all" and message.from_user.id == OWNER_ID:
             db["public_admin_mode"] = True
             save_db(db)
@@ -829,6 +798,8 @@ async def start_single_userbot(session_str: str):
             except Exception:
                 pass
 
+    # 🛠️ FIX: Added await ub.start() which was missing!
+    await ub.start()
     await call_py.start()
     me = await ub.get_me()
     ACTIVE_USERBOTS.append({

@@ -42,7 +42,7 @@ except ImportError:
 API_ID = int(os.environ.get("API_ID", 35222361))
 API_HASH = os.environ.get("API_HASH", "37e25f9cff15259a786c55da0b0af3f3")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8570478868:AAEgOjPS2gCikZu9spLM8PKMJHMHtMNVJzM")
-OWNER_ID = int(os.environ.get("OWNER_ID", 8684812026))
+OWNER_ID = int(os.environ.get("OWNER_ID",8797691602))
 PORT = int(os.environ.get("PORT", 8080))
 
 os.makedirs("audios", exist_ok=True)

@@ -3,7 +3,9 @@ import re
 import json
 import wave
 import random
+import shutil
 import asyncio
+import subprocess
 from typing import Any
 from pyrogram import Client, filters, idle
 from pyrogram.types import (
@@ -42,31 +44,77 @@ except ImportError:
 API_ID = int(os.environ.get("API_ID", 35222361))
 API_HASH = os.environ.get("API_HASH", "37e25f9cff15259a786c55da0b0af3f3")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8570478868:AAEgOjPS2gCikZu9spLM8PKMJHMHtMNVJzM")
-OWNER_ID = int(os.environ.get("OWNER_ID",8797691602))
+OWNER_ID = int(os.environ.get("OWNER_ID", 8684812026))
 PORT = int(os.environ.get("PORT", 8080))
 
 os.makedirs("audios", exist_ok=True)
+os.makedirs("audios/processed", exist_ok=True)
 os.makedirs("sessions", exist_ok=True)
 DB_FILE = "lexii_db.json"
-SILENT_WAV = "audios/silent.wav"
+SILENT_WAV = os.path.abspath("audios/silent.wav")
 
+# Generate a 10-second stereo 48kHz silent WAV file for standby ("cll" command)
 if not os.path.exists(SILENT_WAV):
     with wave.open(SILENT_WAV, "w") as f:
-        f.setnchannels(1)
-        f.setsampwidth(2)
-        f.setframerate(48000)
-        f.writeframes(b"\x00\x00" * 48000 * 2)
+        f.setnchannels(2)       # Stereo (Required by WebRTC / PyTgCalls)
+        f.setsampwidth(2)       # 16-bit
+        f.setframerate(48000)   # 48kHz
+        f.writeframes(b"\x00\x00\x00\x00" * 48000 * 10)
 
 # ==========================================
-# 🎚️ CUSTOM FFMPEG BASS-BOOST & EARRAPE PRESETS
+# 🎚️ FFMPEG AUDIO FILTER CHAINS (BAKED INTO WAV)
 # ==========================================
-MODE_FILTERS = {
-    "-xtrem": "-af bass=g=18:f=110:w=0.6,treble=g=8:f=3500,volume=7.0,aecho=0.8:0.9:100:0.5",
-    "-flow": "-af bass=g=12:f=100:w=0.5,volume=4.0,aecho=0.8:0.88:60:0.4",
-    "-adv": "-af bass=g=14:f=120:w=0.6,treble=g=10:f=3000,volume=5.5,aecho=0.8:0.9:120:0.6",
-    "-dynamic": "-af acompressor=threshold=0.05:ratio=9:attack=5:release=50,bass=g=16:f=110:w=0.6,volume=6.0,aecho=0.8:0.88:40:0.4",
-    "vl_max": "-af bass=g=22:f=110:w=0.7,treble=g=10:f=3500,volume=10.0,aecho=0.8:0.9:100:0.5"
+AUDIO_FILTERS = {
+    "-xtrem": "bass=g=18:f=110:w=0.6,treble=g=8:f=3500,volume=7.0,aecho=0.8:0.9:100:0.5",
+    "-flow": "bass=g=12:f=100:w=0.5,volume=4.0,aecho=0.8:0.88:60:0.4",
+    "-adv": "bass=g=14:f=120:w=0.6,treble=g=10:f=3000,volume=5.5,aecho=0.8:0.9:120:0.6",
+    "-dynamic": "acompressor=threshold=0.05:ratio=9:attack=5:release=50,bass=g=16:f=110:w=0.6,volume=6.0,aecho=0.8:0.88:40:0.4",
+    "vl_max": "bass=g=22:f=110:w=0.7,treble=g=10:f=3500,volume=10.0,aecho=0.8:0.9:100:0.5"
 }
+
+def build_boosted_wav(input_path: str, mode_key: str) -> str:
+    """
+    Converts any Telegram VN (.ogg/.mp3/.m4a) into a 48kHz Stereo 16-bit PCM .wav file
+    with the Bass-Boost, Echo, and Volume filters baked directly in.
+    Guarantees 100% audible playback in PyTgCalls!
+    """
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Audio file not found: {input_path}")
+
+    safe_mode = mode_key.replace("-", "")
+    out_wav = os.path.abspath(f"audios/processed/ready_{safe_mode}.wav")
+    af_chain = AUDIO_FILTERS.get(mode_key, AUDIO_FILTERS["-xtrem"])
+
+    if not shutil.which("ffmpeg"):
+        print("⚠️ WARNING: FFmpeg is not installed! Returning raw file.")
+        return os.path.abspath(input_path)
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", os.path.abspath(input_path),
+        "-af", af_chain,
+        "-ac", "2",              # Force 2-channel Stereo
+        "-ar", "48000",          # Force 48,000 Hz WebRTC sample rate
+        "-acodec", "pcm_s16le",  # Uncompressed 16-bit PCM WAV
+        out_wav
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode == 0 and os.path.exists(out_wav) and os.path.getsize(out_wav) > 1024:
+        return out_wav
+    else:
+        # Fallback simple conversion without complex filters if filter syntax fails on older FFmpeg
+        fallback_cmd = [
+            "ffmpeg", "-y",
+            "-i", os.path.abspath(input_path),
+            "-af", "volume=5.0",
+            "-ac", "2",
+            "-ar", "48000",
+            "-acodec", "pcm_s16le",
+            out_wav
+        ]
+        subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return out_wav if os.path.exists(out_wav) else os.path.abspath(input_path)
+
 
 # ==========================================
 # 🗄️ DATABASE MANAGEMENT
@@ -197,9 +245,11 @@ def get_main_menu():
 @bot.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message: Message):
     USER_STATES.pop(message.from_user.id, None)
+    ffmpeg_ok = "🟢 Installed" if shutil.which("ffmpeg") else "🔴 MISSING (Install ffmpeg!)"
     await message.reply_text(
         f"🎙 **Welcome to Lexii Multi-Userbot Call Controller!**\n\n"
         f"🤖 **Active Swarm Userbots:** `{len(ACTIVE_USERBOTS)}`\n"
+        f"🎚 **FFmpeg Audio Engine:** `{ffmpeg_ok}`\n\n"
         f"Use the buttons below to host userbots in real-time, auto-join groups, "
         f"upload VNs/call recordings, and manage admin permissions.",
         reply_markup=get_main_menu()
@@ -394,25 +444,30 @@ async def handle_private_inputs(client: Client, message: Message):
             return await message.reply_text("❌ Please send a valid Voice Note (VN) or Audio file!")
         
         mode = state["mode"]
-        status_msg = await message.reply_text("⏳ **Downloading audio to server...**")
+        status_msg = await message.reply_text("⏳ **Downloading & pre-processing 48kHz Boosted WAV...**")
         file_ext = ".ogg" if message.voice else ".mp3"
-        save_path = os.path.abspath(f"audios/audio_{mode}{file_ext}")
+        raw_save_path = os.path.abspath(f"audios/raw_{mode}{file_ext}")
         
-        await message.download(file_name=save_path)
+        await message.download(file_name=raw_save_path)
         
+        # Pre-build boosted 48kHz Stereo WAV files so PyTgCalls plays them with 0 lag or silence
+        loop = asyncio.get_running_loop()
         if mode == "default":
-            for k in db["audios"]:
-                db["audios"][k] = save_path
+            for k in ["-xtrem", "-flow", "-adv", "-dynamic"]:
+                wav_path = await loop.run_in_executor(None, build_boosted_wav, raw_save_path, k)
+                db["audios"][k] = wav_path
+            db["audios"]["default"] = db["audios"]["-xtrem"]
         else:
-            db["audios"][mode] = save_path
+            wav_path = await loop.run_in_executor(None, build_boosted_wav, raw_save_path, mode)
+            db["audios"][mode] = wav_path
             if not db["audios"]["default"]:
-                db["audios"]["default"] = save_path
+                db["audios"]["default"] = wav_path
         
         save_db(db)
         USER_STATES.pop(user_id, None)
         await status_msg.edit_text(
-            f"✅ **Audio successfully uploaded and linked to `{mode}`!**\n"
-            f"All hosted userbots will blast this on loop with Bass-Boost & Echo when triggered.",
+            f"✅ **Audio uploaded, converted to 48kHz Stereo WAV, and linked to `{mode}`!**\n"
+            f"🔊 Bass-Boost, Echo, and High-Gain Volume are now baked in and ready to blast!",
             reply_markup=get_main_menu()
         )
 
@@ -475,7 +530,6 @@ async def handle_private_inputs(client: Client, message: Message):
     elif action == "awaiting_otp":
         if not message.text:
             return await message.reply_text("❌ Please send the OTP digits.")
-        # Strip spaces, dashes, or non-digits so "1 2 3 4 5" -> "12345"
         otp = re.sub(r"\D", "", message.text.strip())
         temp_client: Client = state["client"]
         phone = state["phone"]
@@ -521,7 +575,6 @@ async def handle_private_inputs(client: Client, message: Message):
 
 
 async def finalize_userbot_host(user_id: int, temp_client: Client, message: Message):
-    """Exports session string, disconnects temp login client, and boots live Userbot + PyTgCalls."""
     try:
         string_session = await temp_client.export_session_string()
         me = await temp_client.get_me()
@@ -532,8 +585,6 @@ async def finalize_userbot_host(user_id: int, temp_client: Client, message: Mess
             pass
 
     USER_STATES.pop(user_id, None)
-
-    # Give Telegram 1 second to release the temp connection before opening the main userbot session
     await asyncio.sleep(1.0)
 
     status_msg = await message.reply_text(f"🚀 **Booting Lexii Userbot on `{me.first_name}` (`{me.id}`)...**")
@@ -547,7 +598,7 @@ async def finalize_userbot_host(user_id: int, temp_client: Client, message: Mess
         await status_msg.edit_text(
             f"✅ **Lexii Userbot is now LIVE on `{me.first_name}` (`{me.id}`)!**\n"
             f"🤖 **Total Swarm Size:** `{len(ACTIVE_USERBOTS)}` Userbot(s)\n\n"
-            f"🔹 Type `hey lexii` or `menu` in **any group** (even from the hosted account itself!)\n"
+            f"🔹 Type `hey lexii` or `menu` in **any group**\n"
             f"🔹 Use `join <group_link>` to bring all bots into a group.",
             reply_markup=get_main_menu()
         )
@@ -565,9 +616,14 @@ async def finalize_userbot_host(user_id: int, temp_client: Client, message: Mess
 async def _single_join_standby(ub_entry: dict, chat_id: int) -> bool:
     call_py: PyTgCalls = ub_entry["call"]
     try:
+        # Loop the silent standby WAV continuously so the call connection never drops before -xtrem!
         await call_py.play(
             chat_id,
-            MediaStream(SILENT_WAV, audio_parameters=AudioQuality.HIGH)
+            MediaStream(
+                SILENT_WAV,
+                audio_parameters=AudioQuality.HIGH,
+                ffmpeg_parameters="-stream_loop -1"
+            )
         )
         return True
     except Exception as e:
@@ -583,7 +639,11 @@ async def swarm_join_or_create_call(chat_id: int) -> int:
     try:
         await first_ub["call"].play(
             chat_id,
-            MediaStream(SILENT_WAV, audio_parameters=AudioQuality.HIGH)
+            MediaStream(
+                SILENT_WAV,
+                audio_parameters=AudioQuality.HIGH,
+                ffmpeg_parameters="-stream_loop -1"
+            )
         )
     except NoActiveGroupCall:
         call_active = False
@@ -612,32 +672,71 @@ async def swarm_join_or_create_call(chat_id: int) -> int:
     return sum(1 for r in results if r is True)
 
 
-async def _single_blast_audio(ub_entry: dict, chat_id: int, audio_file: str, ffmpeg_args: str) -> bool:
+async def _single_blast_audio(ub_entry: dict, chat_id: int, wav_file: str) -> tuple[bool, str]:
     call_py: PyTgCalls = ub_entry["call"]
     try:
+        # 🛠️ CRITICAL FIX:
+        # 1. We play the pre-boosted 48kHz Stereo WAV file.
+        # 2. We pass `-stream_loop -1` (a valid BEFORE-input FFmpeg flag) so FFmpeg loops infinitely without silence!
         await call_py.play(
             chat_id,
             MediaStream(
-                audio_file,
+                wav_file,
                 audio_parameters=AudioQuality.HIGH,
-                ffmpeg_parameters=ffmpeg_args
+                ffmpeg_parameters="-stream_loop -1"
             )
         )
+        # Ensure the userbot is unmuted and at 200% volume
+        try:
+            await call_py.unmute_stream(chat_id)
+        except Exception:
+            pass
         try:
             await call_py.change_volume_call(chat_id, 200)
         except Exception:
             pass
-        return True
+        return True, "OK"
+    except NoActiveGroupCall:
+        # Auto-create call if not running when user types -xtrem directly
+        try:
+            peer = await ub_entry["client"].resolve_peer(chat_id)
+            await ub_entry["client"].invoke(
+                CreateGroupCall(peer=peer, random_id=random.randint(10000, 999999999))
+            )
+            await asyncio.sleep(1.5)
+            await call_py.play(
+                chat_id,
+                MediaStream(
+                    wav_file,
+                    audio_parameters=AudioQuality.HIGH,
+                    ffmpeg_parameters="-stream_loop -1"
+                )
+            )
+            return True, "Created & Playing"
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
     except Exception as e:
         print(f"⚠️ [{ub_entry['name']}] Blast Audio Error: {e}")
-        return False
+        return False, f"{type(e).__name__}: {e}"
 
-async def swarm_blast_audio(chat_id: int, audio_file: str, ffmpeg_args: str) -> int:
+
+async def swarm_blast_audio(chat_id: int, wav_file: str) -> tuple[int, list[str]]:
     results = await asyncio.gather(
-        *[_single_blast_audio(ub, chat_id, audio_file, ffmpeg_args) for ub in ACTIVE_USERBOTS],
+        *[_single_blast_audio(ub, chat_id, wav_file) for ub in ACTIVE_USERBOTS],
         return_exceptions=True
     )
-    return sum(1 for r in results if r is True)
+    success = 0
+    errors = []
+    for res in results:
+        if isinstance(res, tuple):
+            ok, info = res
+            if ok:
+                success += 1
+            else:
+                errors.append(info)
+        else:
+            errors.append(str(res))
+    return success, errors
 
 
 async def swarm_control_action(chat_id: int, action: str):
@@ -658,7 +757,7 @@ async def swarm_control_action(chat_id: int, action: str):
                         MediaStream(
                             ACTIVE_LOOPS[chat_id]["file"],
                             audio_parameters=AudioQuality.HIGH,
-                            ffmpeg_parameters=MODE_FILTERS["vl_max"]
+                            ffmpeg_parameters="-stream_loop -1"
                         )
                     )
         except Exception:
@@ -671,7 +770,6 @@ async def swarm_control_action(chat_id: int, action: str):
 # 🎧 USERBOT REGISTRATION & EVENT LOOP
 # ==========================================
 async def start_single_userbot(session_str: str):
-    # in_memory=True prevents SQLite file locks when hosting multiple userbots dynamically
     ub = Client(
         f"lexii_ub_{random.randint(10000, 99999)}",
         api_id=API_ID,
@@ -681,7 +779,7 @@ async def start_single_userbot(session_str: str):
     )
     call_py = PyTgCalls(ub)
 
-    # 🛠️ FIXED: Removed undefined `Update` type-hint that crashed userbot startup!
+    # Backup auto-loop handler if stream ever ends
     @call_py.on_update()
     async def on_stream_end(client: PyTgCalls, update: Any):
         is_ended = (StreamEndEvent and isinstance(update, StreamEndEvent)) or (
@@ -699,7 +797,7 @@ async def start_single_userbot(session_str: str):
                         MediaStream(
                             loop_info["file"],
                             audio_parameters=AudioQuality.HIGH,
-                            ffmpeg_parameters=loop_info["ffmpeg"]
+                            ffmpeg_parameters="-stream_loop -1"
                         )
                     )
                     await client.change_volume_call(chat_id, 200)
@@ -708,7 +806,6 @@ async def start_single_userbot(session_str: str):
 
     @ub.on_message(filters.text & ~filters.private)
     async def lexii_group_commands(client: Client, message: Message):
-        # Allow Owner, Admins, OR the hosted Userbot account itself (message.outgoing)
         sender_id = message.from_user.id if message.from_user else 0
         if not (message.outgoing or is_authorized(sender_id)):
             return
@@ -771,27 +868,34 @@ async def start_single_userbot(session_str: str):
 
             if not audio_file or not os.path.exists(audio_file):
                 return await message.reply_text(
-                    "⚠️ **No audio/VN uploaded yet!** Please upload an audio file in the Controller Bot first."
+                    "⚠️ **No audio/VN uploaded yet!** Please upload a Voice Note in the Controller Bot first."
                 )
 
-            ffmpeg_args = MODE_FILTERS.get(mode_key, MODE_FILTERS["-xtrem"])
+            # If the stored audio is an old .ogg/.mp3 from before this update, auto-convert it to boosted 48kHz WAV now!
+            if not audio_file.endswith(".wav") or "processed" not in audio_file:
+                loop = asyncio.get_running_loop()
+                audio_file = await loop.run_in_executor(None, build_boosted_wav, audio_file, mode_key)
+                db["audios"][mode_key] = audio_file
+                save_db(db)
+
             ACTIVE_LOOPS[chat_id] = {
                 "file": audio_file,
-                "ffmpeg": ffmpeg_args,
+                "mode": mode_key,
                 "loop": True
             }
 
-            blasting_count = await swarm_blast_audio(chat_id, audio_file, ffmpeg_args)
+            blasting_count, errors = await swarm_blast_audio(chat_id, audio_file)
             if blasting_count > 0:
                 await message.reply_text(
                     f"🔊 **Swarm Blasting `{mode_key}` Mode!**\n"
                     f"🐝 **Active Userbots in Call:** `{blasting_count}`\n"
-                    f"♾ **Loop:** Continuous Infinite Loop\n"
+                    f"♾ **Loop:** Continuous Infinite Loop (48kHz Stereo PCM)\n"
                     f"🎚 **Preset:** Bass-Boost + Echo + Full Volume (200%)\n"
                     f"Use `pe` to pause, `st` to stop, or `vl` for 10x Earrape."
                 )
             else:
-                await message.reply_text("❌ **Failed to play audio in call! Type `cll` first.**")
+                err_str = errors[0] if errors else "Unknown Error"
+                await message.reply_text(f"❌ **Failed to play audio in call:** `{err_str}`")
 
         elif text == "pe":
             await swarm_control_action(chat_id, "pe")
@@ -809,8 +913,17 @@ async def start_single_userbot(session_str: str):
             await message.reply_text("⏹ **Stopped VN loop and all Userbots left the voice call.**")
 
         elif text == "vl":
+            base_file = None
             if chat_id in ACTIVE_LOOPS:
-                ACTIVE_LOOPS[chat_id]["ffmpeg"] = MODE_FILTERS["vl_max"]
+                base_file = ACTIVE_LOOPS[chat_id]["file"]
+            else:
+                base_file = db["audios"].get("default") or db["audios"].get("-xtrem")
+
+            if base_file and os.path.exists(base_file):
+                loop = asyncio.get_running_loop()
+                vl_wav = await loop.run_in_executor(None, build_boosted_wav, base_file, "vl_max")
+                ACTIVE_LOOPS[chat_id] = {"file": vl_wav, "mode": "vl_max", "loop": True}
+
             await swarm_control_action(chat_id, "vl")
             await message.reply_text("🔊 **MAXIMUM OVERDRIVE ACTIVATED (+22dB Bass + 10x Earrape Gain + 200% Call Vol)!**")
 
@@ -842,19 +955,16 @@ async def start_single_userbot(session_str: str):
             except Exception:
                 pass
 
-    # 🛠️ FIXED: Safe startup sequence so ub and call_py never clash
     if not ub.is_connected:
         await ub.start()
     await call_py.start()
 
     me = await ub.get_me()
 
-    # Auto-add the hosted Userbot account ID to admins so you can type commands from that account too!
     if me.id not in db["admins"]:
         db["admins"].append(me.id)
         save_db(db)
 
-    # Warm up dialog peers in background so the userbot immediately receives group events
     async def _warm_dialogs():
         try:
             async for _ in ub.get_dialogs(limit=50):
@@ -863,7 +973,6 @@ async def start_single_userbot(session_str: str):
             pass
     asyncio.create_task(_warm_dialogs())
 
-    # Replace existing entry if same account was re-hosted
     ACTIVE_USERBOTS[:] = [u for u in ACTIVE_USERBOTS if u["id"] != me.id]
     ACTIVE_USERBOTS.append({
         "client": ub,

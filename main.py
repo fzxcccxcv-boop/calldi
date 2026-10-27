@@ -125,6 +125,11 @@ def load_db():
             "admins": [OWNER_ID],
             "public_admin_mode": False,
             "sessions": [],
+            "rr_texts": [
+                "🔥 Lexii Swarm Target Locked!",
+                "⚡ Keep running, you can't hide!",
+                "💥 Destroyed by Lexii Multi-Userbot!"
+            ],
             "audios": {
                 "default": None,
                 "-xtrem": None,
@@ -136,7 +141,15 @@ def load_db():
         save_db(default_data)
         return default_data
     with open(DB_FILE, "r") as f:
-        return json.load(f)
+        data = json.load(f)
+    if "rr_texts" not in data:
+        data["rr_texts"] = [
+            "🔥 Lexii Swarm Target Locked!",
+            "⚡ Keep running, you can't hide!",
+            "💥 Destroyed by Lexii Multi-Userbot!"
+        ]
+        save_db(data)
+    return data
 
 def save_db(data):
     with open(DB_FILE, "w") as f:
@@ -148,6 +161,7 @@ db = load_db()
 USER_STATES = {}
 ACTIVE_USERBOTS = []
 ACTIVE_LOOPS = {}
+ACTIVE_RR_TASKS = {}
 PROCESSED_MSGS = set()
 
 def is_authorized(user_id: int) -> bool:
@@ -210,6 +224,44 @@ async def swarm_join_group(raw_link: str) -> tuple[int, list[str]]:
             details.append(f"❌ Error: `{res}`")
 
     return success_count, details
+
+
+# ==========================================
+# 🎯 CONTINUOUS TARGET SWIPE (.rr / .srr) ENGINE
+# ==========================================
+async def _rr_swipe_loop(chat_id: int, target_id: int, target_name: str, reply_msg_id: int | None):
+    mention = f"[{target_name}](tg://user?id={target_id})" if target_id else target_name
+    while ACTIVE_RR_TASKS.get(chat_id, {}).get("active", False):
+        texts = db.get("rr_texts", [])
+        if not texts:
+            texts = ["🔥 Target locked!"]
+
+        for ub_entry in list(ACTIVE_USERBOTS):
+            if not ACTIVE_RR_TASKS.get(chat_id, {}).get("active", False):
+                break
+            ub_client: Client = ub_entry["client"]
+            chosen_text = random.choice(texts)
+            try:
+                if reply_msg_id:
+                    await ub_client.send_message(
+                        chat_id,
+                        f"{mention} {chosen_text}",
+                        reply_to_message_id=reply_msg_id
+                    )
+                else:
+                    await ub_client.send_message(
+                        chat_id,
+                        f"{mention} {chosen_text}"
+                    )
+            except FloodWait as fw:
+                await asyncio.sleep(min(fw.value, 10))
+            except Exception:
+                try:
+                    await ub_client.send_message(chat_id, f"{mention} {chosen_text}")
+                except Exception:
+                    pass
+            await asyncio.sleep(0.6)
+        await asyncio.sleep(0.4)
 
 
 # ==========================================
@@ -352,25 +404,33 @@ async def callback_handler(client: Client, cb: CallbackQuery):
         await cb.message.edit_text(
             f"👮 **Admin Panel**\n\n"
             f"🤖 **Active Userbots ({len(ACTIVE_USERBOTS)}):** {ub_names}\n"
-            f"👥 **Authorized Admins:**\n{admins_list}\n\n"
+            f"👥 **Authorized Admins:**\n{admins_list}\n"
+            f"📝 **Saved `.rr` Swipe Texts:** `{len(db.get('rr_texts', []))}`\n\n"
             f"💡 **Swarm Group Commands:**\n"
             f"• `hey lexii` - Wake up bot\n"
             f"• `menu` - Show mode menu\n"
             f"• `join <group_link>` - All userbots join target group at once\n"
             f"• `cll` - All userbots join/start voice call simultaneously\n"
             f"• `-xtrem` | `-flow` | `-adv` | `-dynamic` - All bots blast VN w/ Bass & Earrape\n"
-            f"• `pe` (Pause) | `rs` (Resume) | `st` (Stop) | `vl` (10x Earrape Boost)",
+            f"• `pe` (Pause) | `rs` (Resume) | `st` (Stop) | `vl` (10x Earrape Boost)\n"
+            f"• `.rr` (Reply or `.rr @user`) - Continuous swipe target user\n"
+            f"• `.srr` - Stop active `.rr` raid",
             reply_markup=kb
         )
 
     elif data == "menu_owner":
-        if user_id != OWNER_ID:
-            return await cb.answer("❌ Only the Owner can access this panel!", show_alert=True)
+        if not is_authorized(user_id):
+            return await cb.answer("❌ Only the Owner/Admins can access this panel!", show_alert=True)
         
+        rr_count = len(db.get("rr_texts", []))
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("➕ Add Admin", callback_data="owner_add_admin"),
                 InlineKeyboardButton("➖ Remove Admin", callback_data="owner_rem_admin")
+            ],
+            [
+                InlineKeyboardButton(f"📝 Add .rr Text ({rr_count})", callback_data="owner_add_rr_text"),
+                InlineKeyboardButton("🗑 Clear .rr Texts", callback_data="owner_clear_rr_text")
             ],
             [
                 InlineKeyboardButton("🌐 Toggle Everyone Admin", callback_data="toggle_public_admin")
@@ -378,14 +438,54 @@ async def callback_handler(client: Client, cb: CallbackQuery):
             [InlineKeyboardButton("🔙 Back", callback_data="back_main")]
         ])
         await cb.message.edit_text(
-            "👑 **Owner Control Panel**\n\n"
-            "Manage bot admins or grant admin access to everyone:",
+            f"👑 **Owner Control Panel**\n\n"
+            f"📝 **Loaded `.rr` Swipe Texts:** `{rr_count}`\n"
+            f"Manage bot admins, add `.rr` raid texts, or grant admin access to everyone:",
             reply_markup=kb
+        )
+
+    elif data == "owner_add_rr_text":
+        if not is_authorized(user_id):
+            return await cb.answer("❌ Admins only!", show_alert=True)
+        USER_STATES[user_id] = {"action": "add_rr_text"}
+        current_texts = db.get("rr_texts", [])
+        preview = "\n".join([f"`{i+1}.` {t}" for i, t in enumerate(current_texts[-10:])]) or "None"
+        await cb.message.edit_text(
+            f"📝 **Add `.rr` Swipe Text(s)**\n\n"
+            f"Send the text you want the userbots to use when `.rr` is triggered.\n"
+            f"💡 *Tip: You can send a single message or multiple lines at once (each line will be saved as a separate `.rr` message).* \n\n"
+            f"**Recent Saved Texts:**\n{preview}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="menu_owner")]])
+        )
+
+    elif data == "owner_clear_rr_text":
+        if user_id != OWNER_ID:
+            return await cb.answer("❌ Only the Owner can clear all .rr texts!", show_alert=True)
+        db["rr_texts"] = []
+        save_db(db)
+        await cb.answer("🗑 All .rr texts cleared!", show_alert=True)
+        await cb.message.edit_text(
+            "👑 **Owner Control Panel**\n\n"
+            "🗑 **All `.rr` texts have been cleared!** Click **📝 Add .rr Text** to add new ones.",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("➕ Add Admin", callback_data="owner_add_admin"),
+                    InlineKeyboardButton("➖ Remove Admin", callback_data="owner_rem_admin")
+                ],
+                [
+                    InlineKeyboardButton("📝 Add .rr Text (0)", callback_data="owner_add_rr_text"),
+                    InlineKeyboardButton("🗑 Clear .rr Texts", callback_data="owner_clear_rr_text")
+                ],
+                [
+                    InlineKeyboardButton("🌐 Toggle Everyone Admin", callback_data="toggle_public_admin")
+                ],
+                [InlineKeyboardButton("🔙 Back", callback_data="back_main")]
+            ])
         )
 
     elif data == "owner_add_admin":
         if user_id != OWNER_ID:
-            return
+            return await cb.answer("❌ Only the Owner can add admins!", show_alert=True)
         USER_STATES[user_id] = {"action": "add_admin"}
         await cb.message.edit_text(
             "➕ **Send the Telegram User ID** of the person you want to make Admin:",
@@ -394,7 +494,7 @@ async def callback_handler(client: Client, cb: CallbackQuery):
 
     elif data == "owner_rem_admin":
         if user_id != OWNER_ID:
-            return
+            return await cb.answer("❌ Only the Owner can remove admins!", show_alert=True)
         USER_STATES[user_id] = {"action": "rem_admin"}
         await cb.message.edit_text(
             "➖ **Send the Telegram User ID** you want to remove from Admin:",
@@ -435,6 +535,24 @@ async def handle_private_inputs(client: Client, message: Message):
             f"🔗 **Swarm Auto-Join Report ({joined_count}/{len(ACTIVE_USERBOTS)} Ready)**\n\n"
             f"{report}\n\n"
             f"💡 Go to the group and type `cll` to start/join the call!",
+            reply_markup=get_main_menu()
+        )
+
+    elif action == "add_rr_text":
+        if not message.text:
+            return await message.reply_text("❌ Please send valid text for `.rr`.")
+        lines = [line.strip() for line in message.text.splitlines() if line.strip()]
+        if not lines:
+            return await message.reply_text("❌ Empty text! Please send valid text.")
+        if "rr_texts" not in db:
+            db["rr_texts"] = []
+        db["rr_texts"].extend(lines)
+        save_db(db)
+        USER_STATES.pop(user_id, None)
+        await message.reply_text(
+            f"✅ **Added `{len(lines)}` new `.rr` swipe text(s)!**\n"
+            f"📊 **Total Saved `.rr` Texts:** `{len(db['rr_texts'])}`\n\n"
+            f"💡 Reply `.rr` to any user in a group to start continuous swiping, and `.srr` to stop!",
             reply_markup=get_main_menu()
         )
 
@@ -836,9 +954,62 @@ async def start_single_userbot(session_str: str):
                 "🔗 **Swarm Group Join:** `join <group_link>`\n"
                 f"🐝 **Swarm Call Join (`{len(ACTIVE_USERBOTS)}` Bots):** `cll`\n"
                 "🎛 **Controls:** `pe` (Pause) | `rs` (Resume) | `st` (Stop) | `vl` (10x Earrape)\n"
+                "🎯 **Target Raid:** `.rr` (Reply/Tag target) | `.srr` (Stop Raid)\n"
                 "👑 **Admin:** `admin all` (Give Everyone Admin)"
             )
             await message.reply_text(menu_text)
+
+        elif text == ".rr" or text.startswith(".rr "):
+            if not db.get("rr_texts"):
+                return await message.reply_text(
+                    "⚠️ **No `.rr` texts found!** Add `.rr` texts in the Controller Bot -> **Owner Panel** -> **📝 Add .rr Text**."
+                )
+
+            target_id = 0
+            target_name = "Target"
+            reply_msg_id = None
+
+            if message.reply_to_message:
+                reply_msg_id = message.reply_to_message.id
+                if message.reply_to_message.from_user:
+                    target_id = message.reply_to_message.from_user.id
+                    target_name = message.reply_to_message.from_user.first_name or "Target"
+                elif message.reply_to_message.sender_chat:
+                    target_name = message.reply_to_message.sender_chat.title or "Channel"
+            elif len(raw_text.split(maxsplit=1)) > 1:
+                arg = raw_text.split(maxsplit=1)[1].strip()
+                try:
+                    user_obj = await client.get_users(arg)
+                    target_id = user_obj.id
+                    target_name = user_obj.first_name or arg
+                except Exception:
+                    target_name = arg
+            else:
+                return await message.reply_text(
+                    "⚠️ **Reply to a user's message with `.rr` or type `.rr @username` to start swiping!**"
+                )
+
+            # Stop existing loop in this chat if running
+            if chat_id in ACTIVE_RR_TASKS:
+                ACTIVE_RR_TASKS[chat_id]["active"] = False
+                old_task = ACTIVE_RR_TASKS[chat_id].get("task")
+                if old_task and not old_task.done():
+                    old_task.cancel()
+
+            ACTIVE_RR_TASKS[chat_id] = {"active": True, "task": None}
+            task = asyncio.create_task(_rr_swipe_loop(chat_id, target_id, target_name, reply_msg_id))
+            ACTIVE_RR_TASKS[chat_id]["task"] = task
+
+        elif text == ".srr":
+            if chat_id in ACTIVE_RR_TASKS and ACTIVE_RR_TASKS[chat_id].get("active"):
+                ACTIVE_RR_TASKS[chat_id]["active"] = False
+                task = ACTIVE_RR_TASKS[chat_id].get("task")
+                if task and not task.done():
+                    task.cancel()
+                ACTIVE_RR_TASKS.pop(chat_id, None)
+                await message.reply_text("🛑 **Stopped `.rr` swipe raid!**")
+            else:
+                await message.reply_text("ℹ️ **No active `.rr` raid running in this chat.**")
 
         elif text.startswith("join "):
             target_link = raw_text.split(maxsplit=1)[1].strip()

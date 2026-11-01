@@ -880,7 +880,10 @@ async def callback_handler(client: Client, cb: CallbackQuery):
                 return await cb.answer("❌ Sudo only!", show_alert=True)
             await cb.answer("Force leaving all calls...", show_alert=True)
             for cid in list(db.get("active_calls", {}).keys()):
-                await swarm_control_action(cid, "st")
+                try:
+                    await swarm_control_action(int(cid), "st")
+                except Exception:
+                    pass
             db["active_calls"] = {}
             save_db(db)
             await cb.message.edit_text("✅ All userbots left all calls.",
@@ -1267,6 +1270,7 @@ async def handle_private_inputs(client: Client, message: Message):
         q = message.text.strip().lstrip("@")
         stats = db.get("user_stats", {})
         found = None
+        target = None
         try:
             tid = int(q)
             found = stats.get(str(tid))
@@ -1331,8 +1335,9 @@ async def handle_private_inputs(client: Client, message: Message):
                 new_db = json.load(f)
             if not isinstance(new_db, dict) or "sessions" not in new_db:
                 raise ValueError("Invalid DB format.")
-            global db
-            db = new_db
+            # ✅ Mutate in place — no global reassignment needed
+            db.clear()
+            db.update(new_db)
             save_db(db)
             os.remove(path)
             USER_STATES.pop(uid, None)
@@ -1626,7 +1631,6 @@ async def start_single_userbot(session_str: str):
         txt = raw.lower()
         cid = message.chat.id
 
-        # track group stats
         gstats = db.setdefault("group_stats", {}).setdefault(str(cid), {"commands": 0})
         gstats["commands"] = gstats.get("commands", 0) + 1
 
